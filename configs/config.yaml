@@ -1,0 +1,54 @@
+# Конфигурация проекта ICT-Backtester-RU
+
+# Настройки источника данных
+data:
+  ticker: "IMOEXF"                    # Тикер для бэктеста (можно менять)
+  interval: "1h"                    # Таймфрейм: 1min, 5min, 15min, 1h, 1d
+  days_back: 365                      # Глубина истории в днях
+  cache_enabled: true                 # Кэшировать данные в data/
+
+# Настройки детекторов
+detectors:
+  swing:
+    left_bars: 5                      # Количество свечей слева для подтверждения свинга
+    right_bars: 5                     # Количество свечей справа для подтверждения свинга
+  
+  fvg:
+    min_size_percent: 0.1             # Минимальный размер FVG в % от цены
+    max_age_bars: 50                  # Максимальный возраст FVG в свечах
+  
+  levels:
+    cluster_distance_percent: 0.5     # Расстояние для кластеризации уровней (%)
+    min_touches: 3                    # Минимальное количество касаний для уровня
+
+# Настройки стратегий
+strategies:
+  sweep_mss:
+    risk_per_trade_percent: 1.0       # Риск на сделку (% от капитала)
+    reward_risk_ratio: 2.0            # Соотношение Reward/Risk
+    use_fvg_entry: true               # Входить на FVG после MSS
+  
+  power_of_3:
+    consolidation_hours: 4            # Часы накопления
+    manipulation_lookback: 10         # Свечей для поиска манипуляции
+
+# Настройки бэктеста
+backtest:
+  initial_capital: 1000000            # Начальный капитал (руб)
+  commission_percent: 0.05            # Комиссия (%)
+  slippage_percent: 0.02              # Проскальзывание (%)
+  
+  # Специфика фьючерса IMOEXF
+  futures:
+    contract_multiplier: 1            # Множитель контракта
+    step_price: 1.0                   # Стоимость шага цены (руб)
+    min_step: 1.0                     # Минимальный шаг цены
+    margin_requirement: 15000         # Гарантийное обеспечение (руб)
+
+# Настройки визуализации
+visualization:
+  output_format: "html"               # Формат вывода: html, png
+  show_fvg: true
+  show_levels: true
+  show_entries: true
+  max_candles_display: 500            # Максимум свечей на графике
