@@ -104,7 +104,7 @@ class BacktestEngine:
         
         # Упрощенный и надежный расчет размера позиции
         # Фиксируем риск в деньгах (например, 2000 руб. на сделку для теста)
-        risk_amount = 3000.0 
+        risk_amount = 5000.0 
         risk_per_unit = abs(entry_price - signal.stop_loss)
         
         if risk_per_unit == 0:

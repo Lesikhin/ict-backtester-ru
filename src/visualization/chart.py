@@ -1,5 +1,6 @@
 """
 Визуализация результатов бэктеста через Plotly.
+Масштабируемый график с range slider для навигации по всему периоду.
 """
 
 import logging
@@ -21,7 +22,7 @@ class ChartRenderer:
         self.show_fvg = config.get('show_fvg', True)
         self.show_levels = config.get('show_levels', True)
         self.show_entries = config.get('show_entries', True)
-        self.max_candles = config.get('max_candles_display', 500)
+        self.max_levels_display = 5  # Максимум уровней для отображения
     
     def render_backtest_results(
         self,
@@ -32,64 +33,77 @@ class ChartRenderer:
         metrics: Dict,
         output_path: str = "backtest_results.html"
     ) -> None:
-        """
-        Отрисовать результаты бэктеста.
+        """Отрисовать результаты бэктеста."""
         
-        Args:
-            df: DataFrame с данными
-            trades: Список сделок
-            fvgs: Список FVG
-            levels: Список уровней
-            metrics: Метрики бэктеста
-            output_path: Путь для сохранения графика
-        """
         logger.info("Создание интерактивного графика...")
         
-        # Ограничиваем количество свечей
-        if len(df) > self.max_candles:
-            df = df.tail(self.max_candles)
+        # Показываем ВСЕ данные (без ограничения)
+        df_display = df
         
-        # Создаем subplot с 2 графиками: свечи + equity curve
+        # Создаем subplot: свечи (75%) + equity curve (25%)
         fig = make_subplots(
             rows=2, cols=1,
             shared_xaxes=True,
             vertical_spacing=0.03,
-            row_heights=[0.7, 0.3],
-            subplot_titles=('Price Action', 'Equity Curve')
+            row_heights=[0.75, 0.25],
+            subplot_titles=('Price Action with Trades', 'Equity Curve')
         )
         
-        # 1. Свечи
-        self._add_candlesticks(fig, df, row=1)
+        # 1. Свечи OHLC
+        self._add_candlesticks(fig, df_display, row=1)
         
-        # 2. FVG
-        if self.show_fvg:
-            self._add_fvgs(fig, fvgs, df.index, row=1)
+        # 2. Уровни ликвидности (только релевантные)
+        if self.show_levels and levels:
+            self._add_levels(fig, levels, df_display, row=1)
         
-        # 3. Уровни
-        if self.show_levels:
-            self._add_levels(fig, levels, df.index, row=1)
+        # 3. FVG (последние 20, полупрозрачные зоны)
+        if self.show_fvg and fvgs:
+            self._add_fvgs(fig, fvgs, df_display, row=1)
         
-        # 4. Точки входа/выхода
-        if self.show_entries:
+        # 4. Все точки входа/выхода
+        if self.show_entries and trades:
             self._add_trades(fig, trades, row=1)
         
         # 5. Equity curve
         self._add_equity_curve(fig, trades, row=2)
         
-        # Добавляем метрики в заголовок
+        # Заголовок с метриками
         title = self._create_title(metrics)
-        fig.update_layout(title=title, height=800, showlegend=True)
+        
+        # Настройки layout с range slider
+        fig.update_layout(
+            title=dict(
+                text=title,
+                x=0.5,
+                xanchor='center',
+                font=dict(size=16)
+            ),
+            height=1000,
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                font=dict(size=10)
+            ),
+            xaxis_rangeslider_visible=True,  # Включаем range slider
+            xaxis_rangeslider_thickness=0.05,
+            template="plotly_white",
+            hovermode='x unified'
+        )
         
         # Сохраняем
         if self.output_format == 'html':
-            fig.write_html(output_path)
+            fig.write_html(output_path, include_plotlyjs='cdn')
             logger.info(f"График сохранен: {output_path}")
         else:
-            fig.write_image(output_path)
+            fig.write_image(output_path, width=1920, height=1080)
             logger.info(f"График сохранен: {output_path}")
     
     def _add_candlesticks(self, fig, df: pd.DataFrame, row: int) -> None:
-        """Добавить свечи."""
+        """Добавить свечи OHLC."""
         fig.add_trace(
             go.Candlestick(
                 x=df.index,
@@ -97,21 +111,73 @@ class ChartRenderer:
                 high=df['high'],
                 low=df['low'],
                 close=df['close'],
-                name='OHLC'
+                name='OHLC',
+                increasing_line_color='#26a69a',
+                decreasing_line_color='#ef5350',
+                increasing_fillcolor='#26a69a',
+                decreasing_fillcolor='#ef5350',
+                opacity=0.7
             ),
             row=row, col=1
         )
     
-    def _add_fvgs(self, fig, fvgs: List[FairValueGap], timestamps, row: int) -> None:
-        """Добавить FVG."""
-        for fvg in fvgs[-50:]:  # Последние 50 FVG
-            if fvg.index < len(timestamps) - 10:
-                color = 'rgba(0, 255, 0, 0.1)' if fvg.direction == Direction.LONG else 'rgba(255, 0, 0, 0.1)'
+    def _add_levels(self, fig, levels: List[LiquidityLevel], df: pd.DataFrame, row: int) -> None:
+        """Добавить только релевантные уровни (в диапазоне цены ±15%)."""
+        
+        # Получаем диапазон цен на графике
+        price_min = df['low'].min()
+        price_max = df['high'].max()
+        price_range = price_max - price_min
+        price_center = (price_max + price_min) / 2
+        
+        # Фильтруем уровни: только те, что находятся в диапазоне ±15% от центра
+        relevant_levels = []
+        for level in levels:
+            if abs(level.price - price_center) <= (price_range * 0.15):
+                relevant_levels.append(level)
+        
+        # Сортируем по количеству касаний и берем топ-5
+        relevant_levels.sort(key=lambda l: l.touches, reverse=True)
+        top_levels = relevant_levels[:self.max_levels_display]
+        
+        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8']
+        
+        for i, level in enumerate(top_levels):
+            color = colors[i % len(colors)]
+            
+            # Горизонтальная линия
+            fig.add_hline(
+                y=level.price,
+                line_dash="dash",
+                line_color=color,
+                line_width=2,
+                annotation_text=f"L{i+1} ({level.touches})",
+                annotation_position="right",
+                annotation_font_size=10,
+                row=row, col=1
+            )
+    
+    def _add_fvgs(self, fig, fvgs: List[FairValueGap], df: pd.DataFrame, row: int) -> None:
+        """Добавить FVG как полупрозрачные зоны (последние 20)."""
+        
+        # Берем последние 20 FVG
+        recent_fvgs = fvgs[-20:] if len(fvgs) > 20 else fvgs
+        
+        for fvg in recent_fvgs:
+            if fvg.index < len(df.index):
+                # Определяем цвет
+                if fvg.direction == Direction.LONG:
+                    color = 'rgba(38, 166, 154, 0.1)'  # Зеленый полупрозрачный
+                else:
+                    color = 'rgba(239, 83, 80, 0.1)'   # Красный полупрозрачный
+                
+                # Добавляем прямоугольник (только на 50 свечей вперед, не до конца)
+                end_idx = min(fvg.index + 50, len(df.index) - 1)
                 
                 fig.add_shape(
                     type="rect",
-                    x0=timestamps[fvg.index],
-                    x1=timestamps[-1],
+                    x0=df.index[fvg.index],
+                    x1=df.index[end_idx],
                     y0=fvg.bottom,
                     y1=fvg.top,
                     fillcolor=color,
@@ -119,69 +185,84 @@ class ChartRenderer:
                     row=row, col=1
                 )
     
-    def _add_levels(self, fig, levels: List[LiquidityLevel], timestamps, row: int) -> None:
-        """Добавить уровни."""
-        for level in levels[-10:]:  # Последние 10 уровней
-            fig.add_hline(
-                y=level.price,
-                line_dash="dash",
-                line_color="blue",
-                annotation_text=f"L{level.touches}",
-                row=row, col=1
-            )
-    
     def _add_trades(self, fig, trades: List[Trade], row: int) -> None:
-        """Добавить точки входа/выхода."""
+        """Добавить все точки входа/выхода с маленькими маркерами."""
+        
         entries_x = []
         entries_y = []
         entries_colors = []
+        entries_text = []
         
         exits_x = []
         exits_y = []
         exits_colors = []
+        exits_text = []
         
         for trade in trades:
             # Вход
             entries_x.append(trade.entry_timestamp)
             entries_y.append(trade.entry_price)
-            entries_colors.append('green' if trade.signal.direction == Direction.LONG else 'red')
+            entries_colors.append('#26a69a' if trade.signal.direction == Direction.LONG else '#ef5350')
+            entries_text.append(f"Entry: {trade.entry_price:.2f}<br>Time: {trade.entry_timestamp}")
             
             # Выход
-            if trade.exit_timestamp:
+            if trade.exit_timestamp and trade.exit_price:
                 exits_x.append(trade.exit_timestamp)
                 exits_y.append(trade.exit_price)
-                exits_colors.append('lime' if trade.pnl > 0 else 'orange')
+                exits_colors.append('#00ff00' if trade.pnl > 0 else '#ff6600')
+                exits_text.append(f"Exit: {trade.exit_price:.2f}<br>PnL: {trade.pnl:.0f} руб.")
         
-        # Точки входа
-        fig.add_trace(
-            go.Scatter(
-                x=entries_x,
-                y=entries_y,
-                mode='markers',
-                marker=dict(size=10, color=entries_colors, symbol='triangle-up'),
-                name='Entry',
-                showlegend=False
-            ),
-            row=row, col=1
-        )
+        # Точки входа (маленькие треугольники)
+        if entries_x:
+            fig.add_trace(
+                go.Scatter(
+                    x=entries_x,
+                    y=entries_y,
+                    mode='markers',
+                    marker=dict(
+                        size=6,
+                        color=entries_colors,
+                        symbol='triangle-up',
+                        line=dict(width=0.5, color='black')
+                    ),
+                    name='Entry',
+                    text=entries_text,
+                    hoverinfo='text',
+                    showlegend=True
+                ),
+                row=row, col=1
+            )
         
-        # Точки выхода
-        fig.add_trace(
-            go.Scatter(
-                x=exits_x,
-                y=exits_y,
-                mode='markers',
-                marker=dict(size=10, color=exits_colors, symbol='x'),
-                name='Exit',
-                showlegend=False
-            ),
-            row=row, col=1
-        )
+        # Точки выхода (маленькие крестики)
+        if exits_x:
+            fig.add_trace(
+                go.Scatter(
+                    x=exits_x,
+                    y=exits_y,
+                    mode='markers',
+                    marker=dict(
+                        size=6,
+                        color=exits_colors,
+                        symbol='x',
+                        line=dict(width=1, color='black')
+                    ),
+                    name='Exit',
+                    text=exits_text,
+                    hoverinfo='text',
+                    showlegend=True
+                ),
+                row=row, col=1
+            )
     
     def _add_equity_curve(self, fig, trades: List[Trade], row: int) -> None:
         """Добавить equity curve."""
+        
+        if not trades:
+            return
+        
+        # Строим equity curve
         equity = [1000000]  # Начальный капитал
-        timestamps = [trades[0].entry_timestamp] if trades else []
+        timestamps = [trades[0].entry_timestamp]
         
         for trade in trades:
             equity.append(equity[-1] + trade.pnl)
@@ -192,16 +273,29 @@ class ChartRenderer:
                 x=timestamps,
                 y=equity,
                 mode='lines',
-                line=dict(color='blue', width=2),
-                name='Equity'
+                line=dict(color='#1f77b4', width=2),
+                name='Equity Curve',
+                fill='tozeroy',
+                fillcolor='rgba(31, 119, 180, 0.1)'
             ),
+            row=row, col=1
+        )
+        
+        # Добавляем горизонтальную линию начального капитала
+        fig.add_hline(
+            y=1000000,
+            line_dash="dot",
+            line_color="gray",
+            line_width=1,
+            annotation_text="Initial",
+            annotation_position="left",
             row=row, col=1
         )
     
     def _create_title(self, metrics: Dict) -> str:
         """Создать заголовок с метриками."""
         return (
-            f"ICT Backtest Results | "
+            f"<b>ICT Backtest Results</b><br>"
             f"Trades: {metrics['total_trades']} | "
             f"Win Rate: {metrics['win_rate']:.1f}% | "
             f"Return: {metrics['total_return_percent']:.2f}% | "
